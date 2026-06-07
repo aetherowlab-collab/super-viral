@@ -349,7 +349,7 @@ function renderHome() {
   left.appendChild(el('h1', { className: 'hero-headline mt-lg' },
     el('span', {}, '조회수 안 나온 콘텐츠,'),
     document.createElement('br'),
-    el('span', { className: 'accent' }, '아직 죽은 게 아닙니다.'),
+    el('span', { className: 'accent' }, '심폐소생술'),
   ));
   left.appendChild(el('p', { className: 'hero-subtitle' },
     'YouTube Shorts는 링크만으로, Instagram과 TikTok은 최소 입력으로 30초 만에 노출 병목과 바이럴 처방전을 받아보세요.',
