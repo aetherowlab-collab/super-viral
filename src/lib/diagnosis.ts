@@ -9,11 +9,9 @@ import type {
   Platform,
   ScoreMap,
 } from "../types/superviral";
+import { generateGeminiJson, getGeminiApiKey } from "./gemini";
 
 type JsonRecord = Record<string, unknown>;
-
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 
 const goalLabels: Record<Goal, string> = {
   views: "조회수 확대",
@@ -410,39 +408,19 @@ export function estimateOnly(input: InputData) {
   };
 }
 
-async function callOpenAiJson<T>(messages: JsonRecord[], fallback: T): Promise<T> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
+async function callAiJson<T>(messages: JsonRecord[], fallback: T): Promise<T> {
+  if (!getGeminiApiKey()) {
     return fallback;
   }
 
   try {
-    const response = await fetch(OPENAI_ENDPOINT, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
+    return await generateGeminiJson<T>([
+      {
+        text: messages
+          .map((message) => `${String(message.role ?? "user").toUpperCase()}: ${String(message.content ?? "")}`)
+          .join("\n\n"),
       },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        messages,
-        response_format: { type: "json_object" },
-        temperature: 0.4,
-      }),
-    });
-
-    if (!response.ok) {
-      return fallback;
-    }
-
-    const data = (await response.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) {
-      return fallback;
-    }
-    return JSON.parse(content) as T;
+    ]);
   } catch {
     return fallback;
   }
@@ -459,7 +437,7 @@ export async function inferWithAi(input: {
   manualFallbackUsed: boolean;
 }) {
   const fallback = fallbackInference(input);
-  return callOpenAiJson<AiInference>(
+  return callAiJson<AiInference>(
     [
       { role: "system", content: systemPrompt },
       {
@@ -473,7 +451,7 @@ export async function inferWithAi(input: {
 
 export async function analyzeWithAi(input: InputData) {
   const fallback = fallbackAnalyze(input);
-  return callOpenAiJson<AiResult>(
+  return callAiJson<AiResult>(
     [
       { role: "system", content: systemPrompt },
       {

@@ -1,5 +1,5 @@
-import { readFile } from "fs/promises";
 import type { AiResult, Metadata, VideoAnalysisResult } from "../../types/superviral";
+import { fileToInlineData, generateGeminiJson } from "../gemini";
 
 const fallbackText =
   "영상 직접 분석 결과가 충분하지 않아 메타데이터와 가능한 프레임 정보를 기준으로 보수적으로 진단했습니다.";
@@ -127,22 +127,17 @@ export function fallbackVideoAnalysis(input: {
   };
 }
 
-async function frameToDataUrl(framePath: string) {
-  const bytes = await readFile(framePath);
-  return `data:image/jpeg;base64,${bytes.toString("base64")}`;
-}
-
 export async function analyzeVideoFrames(input: {
   metadata: Metadata;
   thumbnailUrl: string;
   durationSeconds?: number;
   channelName?: string;
   framePaths: string[];
+  audioPath: string;
   transcript: string;
   vcareResult?: AiResult;
   audioAnalysisUsed: boolean;
 }): Promise<VideoAnalysisResult> {
-  const apiKey = process.env.OPENAI_API_KEY;
   const fallback = fallbackVideoAnalysis({
     metadata: input.metadata,
     vcareResult: input.vcareResult,
@@ -152,98 +147,86 @@ export async function analyzeVideoFrames(input: {
     transcript: input.transcript,
   });
 
-  if (!apiKey || input.framePaths.length === 0) {
-    return fallback;
+  if (input.framePaths.length === 0) {
+    throw new Error("No video frames were provided to GPT Vision.");
+  }
+
+  if (!input.audioPath) {
+    throw new Error("No audio file was provided to Gemini.");
+  }
+
+  if (!input.transcript.trim()) {
+    throw new Error("No audio transcript was provided to Gemini.");
   }
 
   const imageParts = await Promise.all(
-    input.framePaths.slice(0, 12).map(async (framePath) => ({
-      type: "image_url",
-      image_url: { url: await frameToDataUrl(framePath), detail: "low" },
-    })),
+    input.framePaths
+      .slice(0, 12)
+      .map((framePath) => fileToInlineData(framePath, "image/jpeg")),
   );
+  const audioPart = await fileToInlineData(input.audioPath, "audio/wav");
+  const parsed = await generateGeminiJson<Partial<VideoAnalysisResult>>([
+    {
+      text: `너는 숏폼 영상·오디오 바이럴 분석가다. JSON만 반환한다. 조회수 보장, 봇, 자동 좋아요, 정책 우회는 제안하지 않는다.
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json",
+대표 프레임들, 실제 오디오 파일, Gemini가 전사한 transcript, 메타데이터, 기존 V-CARE 결과를 함께 보고 숏폼 바이럴 관점에서 진단해줘. 단순 요약 금지. 반드시 실제 프레임과 실제 오디오 근거를 반영해.
+
+분석 질문:
+1 첫 3초 훅이 강한가?
+2 어디서 이탈할 가능성이 높은가?
+3 화면 구성과 컷 전환은 좋은가?
+4 자막이 잘 읽히는가?
+5 음성 전달력은 좋은가?
+6 BGM/효과음이 몰입에 도움이 되는가?
+7 감정 자극이 있는가?
+8 공유/저장/댓글 유도 요소가 있는가?
+9 왜 터질 수 있는가?
+10 왜 안 터질 수 있는가?
+11 조회수를 높이려면 무엇을 고쳐야 하는가?
+
+점수는 0~100. Overall은 Hook 25%, Retention 25%, Emotion 15%, Shareability 20%, Editing 10%, Audio 5%. Grade는 S=90 이상, A=80 이상, B=70 이상, C=60 이상, D=60 미만.
+
+JSON 구조:
+{"analysisMode":"video_audio_direct","usedData":["metadata","videoFrames","audioTranscript","aiInference"],"overallScore":number,"grade":"S|A|B|C|D","hookScore":number,"retentionScore":number,"emotionScore":number,"shareabilityScore":number,"editingScore":number,"audioScore":number,"visualAnalysis":{"summary":"string","firstThreeSeconds":"string","keyScenes":["string"],"editingStyle":"string","retentionRiskPoints":["string"]},"audioAnalysis":{"transcript":"string","voiceTone":"string","musicMood":"string","soundImpact":"string","audioWeaknesses":["string"]},"viralDiagnosis":{"whyItCanGoViral":["string"],"whyItMayFail":["string"],"targetAudienceFit":"string","shareTriggers":["string"]},"prescription":{"topThreeFixes":["string"],"firstThreeSecondsRewrite":"string","captionSuggestions":["string"],"editingSuggestions":["string"],"audioSuggestions":["string"]},"strengths":["string"],"weaknesses":["string"],"improvements":["string"]}
+
+metadata=${JSON.stringify(input.metadata)}
+thumbnailUrl=${input.thumbnailUrl}
+durationSeconds=${input.durationSeconds ?? ""}
+channelName=${input.channelName ?? ""}
+transcript=${input.transcript}
+vcare=${JSON.stringify(input.vcareResult ?? null)}`,
     },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      temperature: 0.35,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            "너는 숏폼 영상·오디오 바이럴 분석가다. JSON만 반환한다. 조회수 보장, 봇, 자동 좋아요, 정책 우회는 제안하지 않는다.",
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `대표 프레임, 전사, 메타데이터, 기존 V-CARE 결과를 함께 보고 숏폼 바이럴 관점에서 진단해줘. 단순 요약 금지. 반드시 실제 프레임과 transcript를 근거로 판단해.\n분석 질문: 1 첫 3초 훅이 강한가? 2 어디서 이탈할 가능성이 높은가? 3 화면 구성과 컷 전환은 좋은가? 4 자막이 잘 읽히는가? 5 음성 전달력은 좋은가? 6 BGM/효과음이 몰입에 도움이 되는가? 7 감정 자극이 있는가? 8 공유/저장/댓글 유도 요소가 있는가? 9 왜 터질 수 있는가? 10 왜 안 터질 수 있는가? 11 조회수를 높이려면 무엇을 고쳐야 하는가?\n점수는 0~100. Overall은 Hook 25%, Retention 25%, Emotion 15%, Shareability 20%, Editing 10%, Audio 5%. Grade는 S=90 이상, A=80 이상, B=70 이상, C=60 이상, D=60 미만.\nJSON만 반환해. 반드시 포함할 JSON 구조: {"analysisMode":"video_audio_direct","usedData":["metadata","videoFrames","audioTranscript","aiInference"],"overallScore":number,"grade":"S|A|B|C|D","hookScore":number,"retentionScore":number,"emotionScore":number,"shareabilityScore":number,"editingScore":number,"audioScore":number,"visualAnalysis":{"summary":"string","firstThreeSeconds":"string","keyScenes":["string"],"editingStyle":"string","retentionRiskPoints":["string"]},"audioAnalysis":{"transcript":"string","voiceTone":"string","musicMood":"string","soundImpact":"string","audioWeaknesses":["string"]},"viralDiagnosis":{"whyItCanGoViral":["string"],"whyItMayFail":["string"],"targetAudienceFit":"string","shareTriggers":["string"]},"prescription":{"topThreeFixes":["string"],"firstThreeSecondsRewrite":"string","captionSuggestions":["string"],"editingSuggestions":["string"],"audioSuggestions":["string"]},"strengths":["string"],"weaknesses":["string"],"improvements":["string"]}\nmetadata=${JSON.stringify(input.metadata)}\nthumbnailUrl=${input.thumbnailUrl}\ndurationSeconds=${input.durationSeconds ?? ""}\nchannelName=${input.channelName ?? ""}\ntranscript=${input.transcript}\nvcare=${JSON.stringify(input.vcareResult ?? null)}`,
-            },
-            ...imageParts,
-          ],
-        },
-      ],
-    }),
-  });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`GPT Vision analysis failed: ${errorText.slice(0, 500)}`);
-    }
-    const data = (await response.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error("GPT Vision analysis returned empty content.");
-    }
-    const parsed = JSON.parse(content) as Partial<VideoAnalysisResult>;
-    const analysisMode: VideoAnalysisResult["analysisMode"] =
-      input.framePaths.length > 0 && input.transcript.trim()
-        ? "video_audio_direct"
-        : input.framePaths.length > 0 || input.transcript.trim()
-          ? "video_partial"
-          : "metadata_fallback";
-    return {
-      ...fallback,
-      ...parsed,
-      analysisMode,
-      usedData: [
-        "metadata",
-        ...(input.framePaths.length > 0 ? ["videoFrames"] : []),
-        ...(input.transcript.trim() ? ["audioTranscript"] : []),
-        "aiInference",
-      ],
-      visualAnalysis: {
-        ...fallback.visualAnalysis,
-        ...(parsed.visualAnalysis ?? {}),
-      },
-      audioAnalysis: {
-        ...fallback.audioAnalysis,
-        ...(parsed.audioAnalysis ?? {}),
-        transcript: parsed.audioAnalysis?.transcript ?? input.transcript,
-      },
-      viralDiagnosis: {
-        ...fallback.viralDiagnosis,
-        ...(parsed.viralDiagnosis ?? {}),
-      },
-      prescription: {
-        ...fallback.prescription,
-        ...(parsed.prescription ?? {}),
-      },
-      strengths: parsed.strengths?.length ? parsed.strengths : fallback.strengths,
-      weaknesses: parsed.weaknesses?.length ? parsed.weaknesses : fallback.weaknesses,
-      improvements: parsed.improvements?.length ? parsed.improvements : fallback.improvements,
-      videoAnalysisUsed: input.framePaths.length > 0,
-      audioAnalysisUsed: input.audioAnalysisUsed,
-      transcriptUsed: Boolean(input.transcript.trim()),
-      metadataUsed: true,
-    };
+    ...imageParts,
+    audioPart,
+  ]);
+  return {
+    ...fallback,
+    ...parsed,
+    analysisMode: "video_audio_direct",
+    usedData: ["metadata", "videoFrames", "audioTranscript", "aiInference"],
+    visualAnalysis: {
+      ...fallback.visualAnalysis,
+      ...(parsed.visualAnalysis ?? {}),
+    },
+    audioAnalysis: {
+      ...fallback.audioAnalysis,
+      ...(parsed.audioAnalysis ?? {}),
+      transcript: parsed.audioAnalysis?.transcript ?? input.transcript,
+    },
+    viralDiagnosis: {
+      ...fallback.viralDiagnosis,
+      ...(parsed.viralDiagnosis ?? {}),
+    },
+    prescription: {
+      ...fallback.prescription,
+      ...(parsed.prescription ?? {}),
+    },
+    strengths: parsed.strengths?.length ? parsed.strengths : fallback.strengths,
+    weaknesses: parsed.weaknesses?.length ? parsed.weaknesses : fallback.weaknesses,
+    improvements: parsed.improvements?.length ? parsed.improvements : fallback.improvements,
+    videoAnalysisUsed: true,
+    audioAnalysisUsed: true,
+    transcriptUsed: true,
+    metadataUsed: true,
+  };
 }

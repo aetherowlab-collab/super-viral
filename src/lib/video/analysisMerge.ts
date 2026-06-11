@@ -14,8 +14,8 @@ export function shouldRunVideoAnalysis(input?: Pick<InputData, "platform"> | nul
   if (process.env.ENABLE_VIDEO_ANALYSIS?.trim().toLowerCase() !== "true") {
     reasons.push("ENABLE_VIDEO_ANALYSIS is not true");
   }
-  if (!process.env.OPENAI_API_KEY) {
-    reasons.push("OPENAI_API_KEY is missing");
+  if (!process.env.GEMINI_API_KEY?.trim()) {
+    reasons.push("GEMINI_API_KEY is missing");
   }
 
   return {

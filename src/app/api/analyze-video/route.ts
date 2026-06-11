@@ -142,7 +142,7 @@ export async function POST(request: NextRequest) {
     try {
       downloaded = await downloadYoutubeShort(inputData.contentUrl, workdir);
       videoDownloadSuccess = true;
-    } catch {
+    } catch (error) {
       const fallback = fallbackVideoAnalysis({
         metadata: inputData.metadata,
         vcareResult: body.vcareResult,
@@ -151,7 +151,9 @@ export async function POST(request: NextRequest) {
         transcriptUsed: false,
       });
       messages.push(
-        "유튜브 영상을 가져오지 못했습니다. 비공개/연령제한/지역제한 영상일 수 있습니다. 메타데이터 기반 분석으로 계속 진행합니다.",
+        error instanceof Error
+          ? `yt-dlp 다운로드 실패: ${error.message}`
+          : "yt-dlp 다운로드 실패",
       );
       console.info("[SuperViral] downloadSuccess =", false);
       console.info("[SuperViral] frameExtractionSuccess =", false);
@@ -174,8 +176,38 @@ export async function POST(request: NextRequest) {
     try {
       framePaths = await extractFrames(downloaded.videoPath, workdir, downloaded.durationSeconds);
       frameExtractionSuccess = framePaths.length > 0;
-    } catch {
-      messages.push("영상 프레임 처리 중 오류가 발생했습니다. 가능한 정보로 분석을 계속합니다.");
+    } catch (error) {
+      messages.push(
+        error instanceof Error
+          ? `ffmpeg 프레임 추출 실패: ${error.message}`
+          : "ffmpeg 프레임 추출 실패",
+      );
+    }
+
+    if (framePaths.length === 0) {
+      const fallback = fallbackVideoAnalysis({
+        metadata: inputData.metadata,
+        vcareResult: body.vcareResult,
+        videoAnalysisUsed: false,
+        audioAnalysisUsed: false,
+        transcriptUsed: false,
+      });
+      console.info("[SuperViral] downloadSuccess =", videoDownloadSuccess);
+      console.info("[SuperViral] frameExtractionSuccess =", false);
+      console.info("[SuperViral] audioExtractionSuccess =", false);
+      console.info("[SuperViral] transcriptionSuccess =", false);
+      console.info("[SuperViral] visionAnalysisSuccess =", false);
+      console.info("[SuperViral] finalDiagnosisAccuracy =", body.vcareResult?.diagnosisAccuracy ?? null);
+      return NextResponse.json({
+        success: false,
+        status: "fallback_metadata",
+        platform: inputData.platform,
+        enabled: true,
+        messages,
+        videoDurationSeconds: downloaded.durationSeconds,
+        framesCount: 0,
+        result: fallback,
+      } satisfies VideoAnalysisApiResponse);
     }
 
     messages.push("오디오 추출 중...");
@@ -185,8 +217,35 @@ export async function POST(request: NextRequest) {
       audioPath = await extractAudio(downloaded.videoPath, workdir);
       audioAnalysisUsed = true;
       audioExtractionSuccess = true;
-    } catch {
-      messages.push("오디오 분석은 실패했지만 영상 분석은 계속 진행합니다.");
+    } catch (error) {
+      messages.push(
+        error instanceof Error
+          ? `ffmpeg 오디오 추출 실패: ${error.message}`
+          : "ffmpeg 오디오 추출 실패",
+      );
+      const fallback = fallbackVideoAnalysis({
+        metadata: inputData.metadata,
+        vcareResult: body.vcareResult,
+        videoAnalysisUsed: false,
+        audioAnalysisUsed: false,
+        transcriptUsed: false,
+      });
+      console.info("[SuperViral] downloadSuccess =", videoDownloadSuccess);
+      console.info("[SuperViral] frameExtractionSuccess =", frameExtractionSuccess);
+      console.info("[SuperViral] audioExtractionSuccess =", false);
+      console.info("[SuperViral] transcriptionSuccess =", false);
+      console.info("[SuperViral] visionAnalysisSuccess =", false);
+      console.info("[SuperViral] finalDiagnosisAccuracy =", body.vcareResult?.diagnosisAccuracy ?? null);
+      return NextResponse.json({
+        success: false,
+        status: "fallback_metadata",
+        platform: inputData.platform,
+        enabled: true,
+        messages,
+        videoDurationSeconds: downloaded.durationSeconds,
+        framesCount: framePaths.length,
+        result: fallback,
+      } satisfies VideoAnalysisApiResponse);
     }
 
     messages.push("음성 전사 중...");
@@ -195,9 +254,43 @@ export async function POST(request: NextRequest) {
       try {
         transcript = await transcribeAudio(audioPath);
         transcriptionSuccess = Boolean(transcript.trim());
-      } catch {
-        messages.push("오디오 전사는 실패했지만 영상 분석은 계속 진행합니다.");
+      } catch (error) {
+        messages.push(
+          error instanceof Error
+            ? `Gemini 오디오 전사 실패: ${error.message}`
+            : "Gemini 오디오 전사 실패",
+        );
       }
+    }
+
+    if (!transcript.trim()) {
+      const fallback = fallbackVideoAnalysis({
+        metadata: inputData.metadata,
+        vcareResult: body.vcareResult,
+        videoAnalysisUsed: false,
+        audioAnalysisUsed: false,
+        transcriptUsed: false,
+      });
+      console.info("[SuperViral] downloadSuccess =", videoDownloadSuccess);
+      console.info("[SuperViral] frameExtractionSuccess =", frameExtractionSuccess);
+      console.info("[SuperViral] audioExtractionSuccess =", audioExtractionSuccess);
+      console.info("[SuperViral] transcriptionSuccess =", false);
+      console.info("[SuperViral] visionAnalysisSuccess =", false);
+      console.info("[SuperViral] finalDiagnosisAccuracy =", body.vcareResult?.diagnosisAccuracy ?? null);
+      return NextResponse.json({
+        success: false,
+        status: "fallback_metadata",
+        platform: inputData.platform,
+        enabled: true,
+        messages: [
+          ...messages,
+          "audioTranscript가 비어 있어 Gemini 멀티모달 분석을 실행하지 않았습니다.",
+        ],
+        videoDurationSeconds: downloaded.durationSeconds,
+        framesCount: framePaths.length,
+        transcript,
+        result: fallback,
+      } satisfies VideoAnalysisApiResponse);
     }
 
     messages.push("AI 분석 중...");
@@ -208,6 +301,7 @@ export async function POST(request: NextRequest) {
         thumbnailUrl: inputData.metadata.thumbnailUrl,
         durationSeconds: downloaded.durationSeconds,
         framePaths,
+        audioPath,
         transcript,
         vcareResult: body.vcareResult,
         audioAnalysisUsed: transcriptionSuccess,
@@ -223,8 +317,8 @@ export async function POST(request: NextRequest) {
       });
       messages.push(
         error instanceof Error
-          ? `GPT Vision 분석 실패: ${error.message}`
-          : "GPT Vision 분석 실패",
+          ? `Gemini 멀티모달 분석 실패: ${error.message}`
+          : "Gemini 멀티모달 분석 실패",
       );
       console.info("[SuperViral] downloadSuccess =", videoDownloadSuccess);
       console.info("[SuperViral] frameExtractionSuccess =", frameExtractionSuccess);

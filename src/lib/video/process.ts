@@ -4,6 +4,7 @@ import { mkdir, readdir, rm, stat } from "fs/promises";
 import { writeFile, unlink } from "fs/promises";
 import path from "path";
 import os from "os";
+import { getGeminiApiKey } from "../gemini";
 
 export const MAX_VIDEO_SECONDS = 90;
 export const MAX_VIDEO_BYTES = 120 * 1024 * 1024;
@@ -42,7 +43,7 @@ export async function canRunCommand(command: string | undefined, args: string[])
 export async function videoAnalysisEnabled() {
   return (
     isVideoAnalysisEnvEnabled() &&
-    Boolean(process.env.OPENAI_API_KEY) &&
+    Boolean(getGeminiApiKey()) &&
     (await canRunCommand(getYtDlpPath(), ["--version"])) &&
     (await canRunCommand(getFfmpegPath(), ["-version"]))
   );
