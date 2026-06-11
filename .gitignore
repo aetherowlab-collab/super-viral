@@ -1,8 +1,27 @@
-node_modules
-.next
-out
+# dependencies
+node_modules/
 
-.env*.local
+# next.js
+.next/
+out/
 
-.tools
-*.log
+# production
+build/
+dist/
+
+# environment variables
+.env
+.env.local
+.env.*.local
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# system
+.DS_Store
+
+# vercel
+.vercel/
