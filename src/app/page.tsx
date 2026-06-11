@@ -82,17 +82,29 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data?.error || "요청에 실패했습니다.");
+async function postJson<T>(url: string, body: unknown, timeoutMs = 60_000): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || "요청에 실패했습니다.");
+    }
+    return data as T;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("요청 시간이 너무 오래 걸립니다. 잠시 후 다시 시도해주세요.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  return data as T;
 }
 
 function CopyButton({ text, label = "복사" }: { text: string; label?: string }) {
@@ -338,6 +350,7 @@ export default function Home() {
 
   async function analyze(perf = performance) {
     if (!currentInput) return;
+    setError("");
     setLoading("V-CARE 상세 처방전을 생성하고 있어요.");
     setVideoResult(null);
     setVideoMessages([]);
@@ -347,11 +360,23 @@ export default function Home() {
         ...currentInput,
         performance: perf,
       };
-      const detailed = await postJson<AiResult>("/api/analyze", {
-        ...inputForAnalysis,
-      });
+      const detailed = await postJson<AiResult>(
+        "/api/analyze",
+        {
+          ...inputForAnalysis,
+        },
+        25_000,
+      );
 
       if (inputForAnalysis.platform === "youtube_shorts") {
+        setResult({
+          ...detailed,
+          diagnosisAccuracy: {
+            ...detailed.diagnosisAccuracy,
+            note: "기본 처방전을 먼저 표시하고, 영상·오디오 분석을 이어서 반영하는 중입니다.",
+          },
+        });
+        setStep("result");
         const statuses = [
           "메타데이터 확인 중...",
           "영상 다운로드 중...",
@@ -373,7 +398,7 @@ export default function Home() {
           const video = await postJson<VideoAnalysisApiResponse>("/api/analyze-video", {
             inputData: inputForAnalysis,
             vcareResult: detailed,
-          });
+          }, 180_000);
           console.info("[SuperViral Front] analyzeVideoApiCalled =", true);
           setVideoMessages(video.messages);
           setVideoResult(video.result ?? null);
@@ -397,9 +422,10 @@ export default function Home() {
           console.info("[SuperViral Front] diagnosisAccuracy =", merged.diagnosisAccuracy);
           console.info("[SuperViral Front] videoAnalysisResult exists =", false);
           setVideoMessages([
-            "AI 분석 중 오류가 발생했습니다. 기존 메타데이터 기반 분석 결과를 표시합니다.",
+            "영상·오디오 분석 요청이 실패했습니다. /debug에서 단계별 원인을 확인할 수 있습니다.",
           ]);
           setVideoProgress("영상·오디오 분석 요청 실패");
+          setError("영상·오디오 분석이 완료되지 않았습니다. 기본 처방전은 먼저 확인할 수 있습니다.");
           setStep("result");
         } finally {
           window.clearInterval(timer);
@@ -408,6 +434,8 @@ export default function Home() {
         setResult(detailed);
         setStep("result");
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "상세 처방전 생성에 실패했습니다.");
     } finally {
       setLoading("");
     }

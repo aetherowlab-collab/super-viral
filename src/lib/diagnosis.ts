@@ -414,13 +414,16 @@ async function callAiJson<T>(messages: JsonRecord[], fallback: T): Promise<T> {
   }
 
   try {
-    return await generateGeminiJson<T>([
-      {
-        text: messages
-          .map((message) => `${String(message.role ?? "user").toUpperCase()}: ${String(message.content ?? "")}`)
-          .join("\n\n"),
-      },
-    ]);
+    return await generateGeminiJson<T>(
+      [
+        {
+          text: messages
+            .map((message) => `${String(message.role ?? "user").toUpperCase()}: ${String(message.content ?? "")}`)
+            .join("\n\n"),
+        },
+      ],
+      12_000,
+    );
   } catch {
     return fallback;
   }

@@ -56,30 +56,47 @@ export async function generateGeminiContent(input: {
   parts: GeminiPart[];
   responseMimeType?: "application/json" | "text/plain";
   temperature?: number;
+  timeoutMs?: number;
 }) {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is missing.");
   }
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      getGeminiModel(),
-    )}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: input.parts }],
-        generationConfig: {
-          temperature: input.temperature ?? 0.35,
-          ...(input.responseMimeType
-            ? { responseMimeType: input.responseMimeType }
-            : {}),
-        },
-      }),
-    },
-  );
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? 60_000);
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+        getGeminiModel(),
+      )}:generateContent?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: input.parts }],
+          generationConfig: {
+            temperature: input.temperature ?? 0.35,
+            ...(input.responseMimeType
+              ? { responseMimeType: input.responseMimeType }
+              : {}),
+          },
+        }),
+      },
+    );
+  } catch (error) {
+    throw new Error(
+      error instanceof Error && error.name === "AbortError"
+        ? "Gemini request timed out."
+        : error instanceof Error
+          ? error.message
+          : "Gemini request failed.",
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const bodyText = await response.text();
   let data: GeminiResponse;
@@ -103,10 +120,11 @@ export async function generateGeminiContent(input: {
   return text;
 }
 
-export async function generateGeminiJson<T>(parts: GeminiPart[]) {
+export async function generateGeminiJson<T>(parts: GeminiPart[], timeoutMs = 75_000) {
   const text = await generateGeminiContent({
     parts,
     responseMimeType: "application/json",
+    timeoutMs,
   });
   return JSON.parse(stripJsonFence(text)) as T;
 }
