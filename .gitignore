@@ -25,3 +25,7 @@ pnpm-debug.log*
 
 # vercel
 .vercel/
+
+# local tools and build cache
+.tools/
+tsconfig.tsbuildinfo
